@@ -1,12 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches-ignore:
-      - "dependabot/**"
-  schedule:
-    - cron: '0 10 * * *' # Once per day at 10am UTC
   workflow_dispatch: # Manual trigger
+    inputs:
+      test-filter:
+        description: Gradle test task selector (e.g. ':spring-security-core:test --tests FooTests'); empty runs the full build
+        required: false
+        default: ''
+        type: string
 
 env:
   DEVELOCITY_ACCESS_KEY: ${{ secrets.GRADLE_ENTERPRISE_SECRET_ACCESS_KEY }}
@@ -16,19 +17,112 @@ permissions:
 
 jobs:
   build:
+    # Inlined from spring-io/spring-security-release-tools/.github/workflows/build.yml@v1
+    # so the built jar can be uploaded; steps and build command kept verbatim.
     name: Build
-    uses: spring-io/spring-security-release-tools/.github/workflows/build.yml@v1
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
     strategy:
+      fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest ]
         jdk: [ 17 ]
-    with:
-      runs-on: ${{ matrix.os }}
-      java-version: ${{ matrix.jdk }}
-      distribution: temurin
-    secrets: inherit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - name: Set up JDK ${{ matrix.jdk }}
+        uses: spring-io/spring-gradle-build-action@861640e9cfde1abc0c071b82106bca8e9d495888 # v2
+        with:
+          java-version: ${{ matrix.jdk }}
+          distribution: temurin
+      # --no-build-cache: setup-gradle persists the Gradle build cache between runs, which would
+      # restore :test tasks FROM-CACHE instead of executing the suite.
+      - name: Build with Gradle
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            ./gradlew assemble ${{ inputs.test-filter }} --continue --no-build-cache
+          else
+            ./gradlew build --continue --no-build-cache
+          fi
+      - name: Summarize test results
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=python; else PY=python3; fi
+          $PY - <<'PY'
+          import glob, os, re, collections, xml.etree.ElementTree as ET
+          srcs = {}
+          for f in glob.glob('**/src/*/java/**/*.java', recursive=True) + glob.glob('**/src/*/kotlin/**/*.kt', recursive=True):
+              f = f.replace('\\', '/'); rel = re.split(r'/src/[^/]+/(?:java|kotlin)/', f, 1)[-1]
+              srcs.setdefault(rel.rsplit('.', 1)[0].replace('/', '.'), f)
+          COND = re.compile(r'^\s*(@(?:Disabled|Enabled|Ignore)\w*(?:\(.*\))?.*)$')
+          def reason(cls, meth):
+              f = srcs.get(cls.split('$')[0])
+              if not f:
+                  return 'no source annotation found (skipped by an assumption at runtime)'
+              lines = open(f, encoding='utf-8', errors='replace').read().splitlines()
+              mname = meth.split('(')[0].split('[')[0]
+              def annots(idx):
+                  out = []; j = idx - 1
+                  while j >= 0 and (lines[j].strip().startswith('@') or lines[j].strip() == '' or lines[j].strip().startswith('//')):
+                      m = COND.match(lines[j]);
+                      if m: out.append(m.group(1).strip())
+                      j -= 1
+                  return out
+              for i, l in enumerate(lines):
+                  if re.search(r'\b(void|fun)\s+' + re.escape(mname) + r'\s*\(', l):
+                      a = annots(i)
+                      if a: return 'method annotated ' + '; '.join(a)
+              simple = cls.split('.')[-1].split('$')[-1]
+              for i, l in enumerate(lines):
+                  if re.search(r'\bclass\s+' + re.escape(simple) + r'\b', l):
+                      a = annots(i)
+                      if a: return 'class annotated ' + '; '.join(a)
+              return 'no @Disabled/@Enabled* annotation found (skipped by an assumption at runtime)'
+          mods = collections.OrderedDict(); skipped = []; failed = []
+          for f in sorted(glob.glob('**/build/test-results/**/TEST-*.xml', recursive=True)):
+              mod = f.replace('\\', '/').split('/build/test-results/')[0]
+              r = ET.parse(f).getroot(); m = mods.setdefault(mod, [0, 0, 0, 0])
+              for tc in r.iter('testcase'):
+                  name = tc.get('classname') + '.' + tc.get('name'); m[0] += 1
+                  sk = tc.find('skipped'); fl = tc.find('failure'); er = tc.find('error')
+                  if sk is not None:
+                      m[2] += 1; skipped.append((name, sk.get('message') or reason(tc.get('classname'), tc.get('name')), mod))
+                  elif fl is not None or er is not None:
+                      m[3] += 1; failed.append(name)
+                  else:
+                      m[1] += 1
+          def short(msg):
+              return msg.replace('method annotated ', '').replace('class annotated ', '')
+          def breakdown(items):
+              c = collections.Counter(short(x[1]) for x in items)
+              return '; '.join(f'{v}x {k}' for k, v in c.most_common())
+          for n in failed:
+              print(f'FAILED {n}')
+          for n, msg, _mod in skipped:
+              print(f'TEST SKIPPED {n} -- {short(msg)}')
+          for mod, (t, p, s, fl) in mods.items():
+              sk = [x for x in skipped if x[2] == mod]
+              extra = f' [skip reasons: {breakdown(sk)}]' if sk else ''
+              print(f'TEST MODULE {mod}: tests={t} passed={p} skipped={s} failed={fl}{extra}')
+          tot = [sum(v[i] for v in mods.values()) for i in range(4)]
+          print(f'TEST SUMMARY: modules={len(mods)} tests={tot[0]} passed={tot[1]} skipped={tot[2]} failed={tot[3]}')
+          print(f'TEST SUMMARY skip reasons (JUnit condition annotations read from the upstream test source): {breakdown(skipped)}')
+          PY
+      - name: Upload spring-security-core jar
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-security-core-jar
+          path: |
+            core/build/libs/spring-security-core-*.jar
+            !core/build/libs/*-sources.jar
+            !core/build/libs/*-javadoc.jar
+            !core/build/libs/*-test.jar
+          if-no-files-found: error
   test:
     name: Test Against Snapshots
+    if: false # tests against floating snapshot dependencies (repo.spring.io snapshot, 21-ea), not the release's dependency set
     uses: spring-io/spring-security-release-tools/.github/workflows/test.yml@v1
     strategy:
       matrix:
@@ -44,6 +138,7 @@ jobs:
   check-samples:
     name: Check Samples
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ github.repository_owner == 'spring-projects' }}
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +162,7 @@ jobs:
   check-tangles:
     name: Check for Package Tangles
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ github.repository_owner == 'spring-projects' }}
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +178,7 @@ jobs:
           ./gradlew check s101 -Ps101.licenseId="$STRUCTURE101_LICENSEID" --stacktrace
   deploy-artifacts:
     name: Deploy Artifacts
+    if: false # needs release secrets
     needs: [ build, test, check-samples, check-tangles ]
     uses: spring-io/spring-security-release-tools/.github/workflows/deploy-artifacts.yml@v1
     with:
@@ -89,6 +186,7 @@ jobs:
     secrets: inherit
   deploy-docs:
     name: Deploy Docs
+    if: false # needs release secrets
     needs: [ build, test, check-samples, check-tangles ]
     uses: spring-io/spring-security-release-tools/.github/workflows/deploy-docs.yml@v1
     with:
@@ -96,6 +194,7 @@ jobs:
     secrets: inherit
   deploy-schema:
     name: Deploy Schema
+    if: false # needs release secrets
     needs: [ build, test, check-samples, check-tangles ]
     uses: spring-io/spring-security-release-tools/.github/workflows/deploy-schema.yml@v1
     with:
@@ -103,6 +202,7 @@ jobs:
     secrets: inherit
   perform-release:
     name: Perform Release
+    if: false # needs release secrets
     needs: [ deploy-artifacts, deploy-docs, deploy-schema ]
     uses: spring-io/spring-security-release-tools/.github/workflows/perform-release.yml@v1
     with:
@@ -116,8 +216,9 @@ jobs:
   notify_result:
     name: Check for failures
     needs: [ perform-release ]
-    if: failure()
+    if: false # needs Slack secret
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: read
     steps:

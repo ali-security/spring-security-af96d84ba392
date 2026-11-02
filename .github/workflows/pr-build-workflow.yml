@@ -1,6 +1,6 @@
 name: PR Build
 
-on: pull_request
+on: workflow_dispatch
 
 env:
   DEVELOCITY_ACCESS_KEY: ${{ secrets.GRADLE_ENTERPRISE_SECRET_ACCESS_KEY }}

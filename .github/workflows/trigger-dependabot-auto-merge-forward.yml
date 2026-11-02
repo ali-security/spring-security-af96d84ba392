@@ -1,9 +1,7 @@
 name: Trigger Dependabot Auto Merge Forward
 
 on:
-  push:
-    branches:
-      - '*.x'
+  workflow_dispatch:
 
 permissions: read-all
 
