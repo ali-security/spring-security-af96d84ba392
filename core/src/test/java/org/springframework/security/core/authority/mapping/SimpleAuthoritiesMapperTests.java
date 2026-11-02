@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package org.springframework.security.core.authority.mapping;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -69,6 +70,28 @@ public class SimpleAuthoritiesMapperTests {
 		assertThat(mapped).hasSize(2);
 		assertThat(mapped).contains("AAA");
 		assertThat(mapped).contains("BBB");
+	}
+
+	@Test
+	public void caseIsConvertedIndependentOfDefaultLocale() {
+		Locale defaultLocale = Locale.getDefault();
+		try {
+			Locale.setDefault(Locale.forLanguageTag("tr"));
+			SimpleAuthorityMapper mapper = new SimpleAuthorityMapper();
+			mapper.setPrefix("");
+			mapper.setConvertToUpperCase(true);
+			Set<String> mapped = AuthorityUtils
+				.authorityListToSet(mapper.mapAuthorities(AuthorityUtils.createAuthorityList("admin", "Editor")));
+			assertThat(mapped).containsExactlyInAnyOrder("ADMIN", "EDITOR");
+			mapper.setConvertToUpperCase(false);
+			mapper.setConvertToLowerCase(true);
+			mapped = AuthorityUtils
+				.authorityListToSet(mapper.mapAuthorities(AuthorityUtils.createAuthorityList("ADMIN", "EDITOR")));
+			assertThat(mapped).containsExactlyInAnyOrder("admin", "editor");
+		}
+		finally {
+			Locale.setDefault(defaultLocale);
+		}
 	}
 
 	@Test

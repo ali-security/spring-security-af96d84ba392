@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2022 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.springframework.security.provisioning;
 
+import java.util.Locale;
 import java.util.Properties;
 
 import org.junit.jupiter.api.Test;
@@ -27,8 +28,10 @@ import org.springframework.security.core.context.SecurityContextImpl;
 import org.springframework.security.core.userdetails.PasswordEncodedUser;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
@@ -58,6 +61,41 @@ public class InMemoryUserDetailsManagerTests {
 		this.manager.updatePassword(userNotLowerCase, newPassword);
 		assertThat(this.manager.loadUserByUsername(userNotLowerCase.getUsername()).getPassword())
 			.isEqualTo(newPassword);
+	}
+
+	@Test
+	public void loadUserByUsernameWhenTurkishDefaultLocaleThenCaseInsensitiveLookupIsLocaleIndependent() {
+		Locale defaultLocale = Locale.getDefault();
+		try {
+			Locale.setDefault(Locale.forLanguageTag("tr"));
+			UserDetails admin = User.withUserDetails(PasswordEncodedUser.admin()).username("ADMIN").build();
+			InMemoryUserDetailsManager manager = new InMemoryUserDetailsManager(admin);
+			assertThat(manager.userExists("admin")).isTrue();
+			assertThat(manager.userExists("ADMIN")).isTrue();
+			assertThat(manager.loadUserByUsername("admin").getUsername()).isEqualTo("ADMIN");
+			// dotless i must not resolve to the account registered as "ADMIN"
+			assertThat(manager.userExists("adm\u0131n")).isFalse();
+			assertThatExceptionOfType(UsernameNotFoundException.class)
+				.isThrownBy(() -> manager.loadUserByUsername("adm\u0131n"));
+		}
+		finally {
+			Locale.setDefault(defaultLocale);
+		}
+	}
+
+	@Test
+	public void createUserWhenTurkishDefaultLocaleAndSameUsernameDifferentCaseThenException() {
+		Locale defaultLocale = Locale.getDefault();
+		try {
+			Locale.setDefault(Locale.forLanguageTag("tr"));
+			InMemoryUserDetailsManager manager = new InMemoryUserDetailsManager(
+					User.withUserDetails(PasswordEncodedUser.admin()).username("admin").build());
+			UserDetails duplicate = User.withUserDetails(PasswordEncodedUser.user()).username("ADMIN").build();
+			assertThatIllegalArgumentException().isThrownBy(() -> manager.createUser(duplicate));
+		}
+		finally {
+			Locale.setDefault(defaultLocale);
+		}
 	}
 
 	@Test

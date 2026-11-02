@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.Test;
 
@@ -73,6 +74,38 @@ public class SimpleRoles2GrantedAuthoritiesMapperTests {
 		SimpleAttributes2GrantedAuthoritiesMapper mapper = getDefaultMapper();
 		mapper.setConvertAttributeToLowerCase(true);
 		testGetGrantedAuthorities(mapper, roles, expectedGas);
+	}
+
+	@Test
+	public final void testGetGrantedAuthoritiesToUpperCaseWhenTurkishDefaultLocale() {
+		Locale defaultLocale = Locale.getDefault();
+		try {
+			Locale.setDefault(Locale.forLanguageTag("tr"));
+			String[] roles = { "admin", "editor" };
+			String[] expectedGas = { "ADMIN", "EDITOR" };
+			SimpleAttributes2GrantedAuthoritiesMapper mapper = getDefaultMapper();
+			mapper.setConvertAttributeToUpperCase(true);
+			testGetGrantedAuthorities(mapper, roles, expectedGas);
+		}
+		finally {
+			Locale.setDefault(defaultLocale);
+		}
+	}
+
+	@Test
+	public final void testGetGrantedAuthoritiesToLowerCaseWhenTurkishDefaultLocale() {
+		Locale defaultLocale = Locale.getDefault();
+		try {
+			Locale.setDefault(Locale.forLanguageTag("tr"));
+			String[] roles = { "ADMIN", "EDITOR" };
+			String[] expectedGas = { "admin", "editor" };
+			SimpleAttributes2GrantedAuthoritiesMapper mapper = getDefaultMapper();
+			mapper.setConvertAttributeToLowerCase(true);
+			testGetGrantedAuthorities(mapper, roles, expectedGas);
+		}
+		finally {
+			Locale.setDefault(defaultLocale);
+		}
 	}
 
 	@Test
